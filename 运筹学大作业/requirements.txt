@@ -1,0 +1,9 @@
+numpy
+scipy
+matplotlib
+pandas
+networkx
+cvxpy
+scikit-learn
+test_runner
+requests
