@@ -1,0 +1,216 @@
+\documentclass[10pt]{beamer}
+\usepackage[utf8]{inputenc}
+\usepackage{ctex}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{amsmath}
+
+\usetheme{Madrid}
+\usecolortheme{whale}
+
+% 代码块样式设置
+\lstset{
+    language=Python,
+    basicstyle=\tiny\ttfamily,
+    keywordstyle=\color{blue},
+    stringstyle=\color{red},
+    commentstyle=\color{green!60!black},
+    breaklines=true,
+    showstringspaces=false,
+    frame=single,
+    numbers=left,
+    numberstyle=\tiny\color{gray}
+}
+
+\title[中科大校内文件搜索引擎]{基于 HBase 的分布式校内文件搜索引擎}
+\subtitle{大数据系统基础实验报告}
+\author{[小组名称]}
+\institute[USTC]{中国科学技术大学}
+\date{\today}
+
+\begin{document}
+
+% 封面页
+\begin{frame}
+    \titlepage
+\end{frame}
+
+% 目录页
+\begin{frame}{目录}
+    \tableofcontents
+\end{frame}
+
+% 第一部分：小组成员与分工
+\section{小组成员与分工}
+\begin{frame}{小组成员与分工}
+    \begin{table}
+        \centering
+        \small
+        \begin{tabular}{llp{7cm}}
+            \toprule
+            \textbf{姓名} & \textbf{分工角色} & \textbf{具体职责} \\
+            \midrule
+            [姓名A] & 组长 & 项目架构设计、HBase集群搭建、分布式爬虫开发 \\
+            [姓名B] & 算法架构 & 搜索引擎核心实现（BM25/倒排索引）、存储层封装 \\
+            [姓名C] & 全栈开发 & Flask Web后端、前端界面、测试与文档撰写 \\
+            \bottomrule
+        \end{tabular}
+    \end{table}
+\end{frame}
+
+% 第二部分：技术路线
+\section{技术路线}
+
+\begin{frame}{技术路线概览}
+    \begin{itemize}
+        \item \textbf{数据采集}：Scrapy 爬虫
+        \begin{itemize}
+            \item 广度优先搜索 (BFS) 遍历校内站点
+            \item 深度优先抓取“下载中心”文件
+            \item 解析 PDF/DOCX 非结构化数据
+        \end{itemize}
+        \vspace{0.5cm}
+        \item \textbf{数据存储}：HBase 分布式数据库
+        \begin{itemize}
+            \item \textbf{Row Key}：\texttt{MD5(URL)[:8] + Timestamp}
+            \item \textbf{列族}：\texttt{info} (元数据), \texttt{index} (索引)
+            \item 实现了 Local File Fallback 机制
+        \end{itemize}
+    \end{itemize}
+\end{frame}
+
+\begin{frame}{搜索引擎核心算法}
+    \begin{block}{BM25 相关度评分}
+        相比传统 TF-IDF，引入词频饱和与长度归一化：
+        \begin{equation*}
+            Score(D, Q) = \sum_{i=1}^{n} IDF(q_i) \cdot \frac{f(q_i, D) \cdot (k_1 + 1)}{f(q_i, D) + k_1 \cdot (1 - b + b \cdot \frac{|D|}{avgdl})}
+        \end{equation*}
+        \footnotesize{参数设置：$k_1=1.5$ (饱和度), $b=0.75$ (长度惩罚)}
+    \end{block}
+    
+    \vspace{0.3cm}
+    
+    \begin{block}{标题加权策略 (Title Weighting)}
+        \begin{itemize}
+            \item 查询词在标题中出现比例 $>80\%$ $\rightarrow$ 权重 $\times 2.0$
+            \item 查询词在标题中出现比例 $>50\%$ $\rightarrow$ 权重 $\times 1.5$
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+\begin{frame}{系统架构}
+    \textbf{用户界面}：Flask + Bootstrap (响应式设计)
+    
+    \vspace{0.5cm}
+    
+    \begin{itemize}
+        \item \textbf{轻量级后端}：解析请求 -> 查询 HBase -> 排序结果
+        \item \textbf{多端适配}：完美支持 PC 与移动端访问
+    \end{itemize}
+\end{frame}
+
+% 第三部分：功能与效果
+\section{功能与效果展示}
+\begin{frame}{核心功能}
+    \begin{enumerate}
+        \item \textbf{深度爬取能力}
+        \begin{itemize}
+            \item 穿透多级目录，直达“附件下载”
+            \item 支持 pdf, doc, xls 等多种格式解析
+        \end{itemize}
+        \vspace{0.3cm}
+        \item \textbf{精准搜索}
+        \begin{itemize}
+            \item 支持按“来源网站”筛选 (e.g., 教务处, 财务处)
+            \item 毫秒级响应 (基于倒排索引)
+        \end{itemize}
+        \vspace{0.3cm}
+        \item \textbf{智能排序}
+        \begin{itemize}
+            \item 基于 BM25 + 标题加权，结果更符合直觉
+        \end{itemize}
+    \end{enumerate}
+\end{frame}
+
+% 第四部分：核心代码
+\section{核心代码实现}
+\begin{frame}[fragile]{HBase 数据写入接口}
+    \begin{lstlisting}
+def _save_to_hbase(self, doc: Document, row_key: str) -> str:
+    try:
+        table = self.connection.table(self.table_name)
+        data = doc.to_dict()
+        # 准备HBase数据，存储在 info 列族下
+        hbase_data = {}
+        for key, value in data.items():
+            if value:
+                hbase_data[f'info:{key}'] = str(value).encode('utf-8')
+        
+        table.put(row_key.encode(), hbase_data)
+        return row_key
+    except Exception as e:
+        print(f"Error saving to HBase: {e}")
+        raise
+    \end{lstlisting}
+\end{frame}
+
+\begin{frame}[fragile]{BM25 算法实现}
+    \begin{lstlisting}
+def calculate_bm25(self, doc_tokens: List[str], query_tokens: List[str]) -> float:
+    score = 0.0
+    doc_length = len(doc_tokens)
+    doc_token_freq = Counter(doc_tokens)
+    
+    for query_token in query_tokens:
+        if query_token in doc_token_freq:
+            tf = doc_token_freq[query_token]
+            # IDF * (TF部分 * 饱和度控制) / (长度归一化)
+            numerator = self.idf_cache.get(query_token, 0) * tf * (self.k1 + 1)
+            denominator = tf + self.k1 * (1 - self.b + self.b * (doc_length / max(self.avg_doc_length, 1)))
+            score += numerator / max(denominator, 1)
+    return score
+    \end{lstlisting}
+\end{frame}
+
+% 第五部分：总结与心得
+\section{总结与心得}
+\begin{frame}{踩坑与收获}
+    \begin{columns}[t]
+        \column{0.33\textwidth}
+        \textbf{[姓名A] (架构)}
+        \begin{itemize}
+            \item \textbf{问题}：Thrift 接口未启动导致连接失败
+            \item \textbf{收获}：深入理解了 HBase 的部署与服务治理
+        \end{itemize}
+        
+        \column{0.33\textwidth}
+        \textbf{[姓名B] (算法)}
+        \begin{itemize}
+            \item \textbf{问题}：结果冗余
+            \item \textbf{解决}：引入 SimHash 去重
+            \item \textbf{收获}：彻底掌握了从 TF-IDF 到 BM25 的演进
+        \end{itemize}
+        
+        \column{0.33\textwidth}
+        \textbf{[姓名C] (全栈)}
+        \begin{itemize}
+            \item \textbf{问题}：PDF 乱码与清洗
+            \item \textbf{收获}：掌握了非结构化数据的处理流程与 Linux 运维
+        \end{itemize}
+    \end{columns}
+\end{frame}
+
+\begin{frame}
+    \centering
+    \Huge
+    \textbf{感谢聆听！}
+    
+    \vspace{1cm}
+    \large
+    Q \& A
+\end{frame}
+
+\end{document}
+

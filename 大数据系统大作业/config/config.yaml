@@ -1,0 +1,40 @@
+# HBase配置
+hbase:
+  host: localhost
+  port: 9090
+  table_name: ustc_documents
+  index_table_name: ustc_index
+
+# 爬虫配置
+crawler:
+  download_delay: 1.0  # 下载延迟（秒）
+  concurrent_requests: 16
+  respect_robots_txt: true
+  user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+  
+# 搜索引擎配置
+search:
+  # 分词配置
+  jieba_dict_path: null  # 自定义词典路径，可选
+  # 相关性算法：tfidf 或 bm25
+  ranking_algorithm: bm25
+  # BM25参数
+  bm25_k1: 1.5
+  bm25_b: 0.75
+  # 搜索结果数量
+  max_results: 50
+
+# Web服务配置
+web:
+  host: 0.0.0.0
+  port: 5000
+  debug: true
+
+# 文件存储配置
+storage:
+  # 文件存储路径（如果不用HBase存储文件）
+  file_storage_path: ./data/files
+  # 最大文件大小（MB）
+  max_file_size_mb: 50
+
+

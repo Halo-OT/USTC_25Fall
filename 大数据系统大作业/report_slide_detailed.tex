@@ -1,0 +1,319 @@
+\documentclass[10pt, aspectratio=169]{beamer}
+\usepackage[utf8]{inputenc}
+\usepackage{ctex}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows}
+
+% 主题设置
+\usetheme{Madrid}
+\usecolortheme{whale}
+\setbeamerfont{title}{size=\huge}
+\setbeamerfont{subtitle}{size=\Large}
+\setbeamerfont{frametitle}{size=\large}
+
+% 代码块样式设置
+\lstset{
+    language=Python,
+    basicstyle=\tiny\ttfamily,
+    keywordstyle=\color{blue!80!black},
+    stringstyle=\color{red!60!black},
+    commentstyle=\color{green!50!black},
+    breaklines=true,
+    showstringspaces=false,
+    frame=leftline,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    xleftmargin=1em,
+    backgroundcolor=\color{gray!5}
+}
+
+\title[中科大校内文件搜索引擎]{基于 HBase 的分布式校内文件搜索引擎}
+\subtitle{大数据系统基础实验报告}
+\author{[小组名称]}
+\institute[USTC]{中国科学技术大学}
+\date{\today}
+
+\begin{document}
+
+% -----------------------------------------------------------------------------
+% 封面与目录
+% -----------------------------------------------------------------------------
+\begin{frame}
+    \titlepage
+\end{frame}
+
+\begin{frame}{演示概览}
+    \tableofcontents
+\end{frame}
+
+% -----------------------------------------------------------------------------
+% 1. 项目背景与架构
+% -----------------------------------------------------------------------------
+\section{项目背景与整体架构}
+
+\begin{frame}{1.1 项目目标与挑战}
+    \begin{columns}
+        \column{0.5\textwidth}
+        \textbf{核心目标}
+        \begin{itemize}
+            \item 构建覆盖中科大各院系网站的搜索引擎
+            \item 实现非结构化文件（PDF/DOCX）的全文检索
+            \item 搭建基于 HBase 的海量数据存储系统
+        \end{itemize}
+        
+        \column{0.5\textwidth}
+        \textbf{面临挑战}
+        \begin{itemize}
+            \item \alert{数据孤岛}：各院系网站结构差异巨大
+            \item \alert{海量存储}：数万份文件对存储系统的扩展性要求高
+            \item \alert{搜索质量}：如何从海量文本中精准召回相关文档
+        \end{itemize}
+    \end{columns}
+\end{frame}
+
+\begin{frame}{1.2 系统整体架构}
+    \begin{itemize}
+        \item \textbf{数据采集层 (Data Ingestion)}: Scrapy 分布式爬虫集群
+        \item \textbf{数据存储层 (Storage)}: HBase 分布式数据库 (Thrift Server)
+        \item \textbf{计算索引层 (Computation)}: 自研倒排索引构建器 + Jieba 分词
+        \item \textbf{应用服务层 (Application)}: Flask Web Server + BM25 Ranking
+    \end{itemize}
+    \vspace{0.5cm}
+    \begin{center}
+        \textit{数据流向：Internet $\rightarrow$ Scrapy $\rightarrow$ HBase $\rightarrow$ Indexer $\rightarrow$ Search Engine}
+    \end{center}
+\end{frame}
+
+% -----------------------------------------------------------------------------
+% 2. 爬虫算法详解
+% -----------------------------------------------------------------------------
+\section{核心算法一：分布式爬虫设计}
+
+\begin{frame}{2.1 爬虫策略设计}
+    我们采用了 \textbf{混合遍历策略} 来平衡覆盖率与时效性：
+    
+    \vspace{0.3cm}
+    
+    \begin{block}{1. 广度优先搜索 (BFS)}
+        \begin{itemize}
+            \item \textbf{目的}：快速发现新的子域名和一级目录。
+            \item \textbf{实现}：维护一个 URL 队列，优先提取页面中的 \texttt{<a>} 标签链接。
+        \end{itemize}
+    \end{block}
+    
+    \begin{block}{2. 定向深度优先 (Targeted DFS)}
+        \begin{itemize}
+            \item \textbf{目的}：针对包含 ``下载中心''、``附件''、``resource'' 等关键词的路径进行深度挖掘。
+            \item \textbf{优势}：大幅提高了 PDF/DOC 等高价值文件的命中率。
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+\begin{frame}[fragile]{2.2 增量去重与布隆过滤器}
+    为避免重复抓取，我们在 Scrapy Middleware 中实现了去重逻辑：
+    
+    \begin{itemize}
+        \item \textbf{URL 指纹}：对每个 URL 计算 MD5 哈希。
+        \item \textbf{去重逻辑}：
+        \begin{lstlisting}
+import hashlib
+
+def request_seen(self, request):
+    fp = hashlib.md5(request.url.encode()).hexdigest()
+    if fp in self.fingerprints:
+        return True
+    self.fingerprints.add(fp)
+    return False
+        \end{lstlisting}
+        \item \textbf{优化方案}：对于海量 URL，可升级为 Bloom Filter（空间效率提升 10 倍以上）。
+    \end{itemize}
+\end{frame}
+
+\begin{frame}{2.3 非结构化数据清洗 pipeline}
+    针对 PDF/Word 文档的特殊处理流程：
+    
+    \begin{enumerate}
+        \item \textbf{文件流下载}：检测 \texttt{Content-Type}，如果是 application/pdf 则进入下载管道。
+        \item \textbf{文本提取}：
+            \begin{itemize}
+                \item \texttt{pdfminer.six}：提取 PDF 文本层。
+                \item \texttt{python-docx}：提取 Word 文档 XML 内容。
+            \end{itemize}
+        \item \textbf{噪声清洗}：
+            \begin{itemize}
+                \item 去除页眉页脚（正则表达式匹配重复出现的模式）。
+                \item 去除乱码字符（过滤非 UTF-8 及控制字符）。
+            \end{itemize}
+    \end{enumerate}
+\end{frame}
+
+% -----------------------------------------------------------------------------
+% 3. 数据管理算法详解
+% -----------------------------------------------------------------------------
+\section{核心算法二：数据管理与 HBase 设计}
+
+\begin{frame}{3.1 为什么选择 HBase?}
+    相比于 MySQL，HBase 在本场景下的优势：
+    \begin{itemize}
+        \item \textbf{列式存储}：网页数据稀疏，列族设计节省空间。
+        \item \textbf{Schema-less}：适应不同网页结构的动态变化。
+        \item \textbf{高吞吐写入}：LSM-Tree 架构支持爬虫的高并发写入。
+    \end{itemize}
+\end{frame}
+
+\begin{frame}{3.2 RowKey 设计优化}
+    \textbf{设计原则}：唯一性、散列性、长度控制。
+    
+    \vspace{0.3cm}
+    
+    \begin{alertblock}{Bad Case: 使用原始 URL 作为 RowKey}
+        \begin{itemize}
+            \item URL 长度不一，导致存储开销大。
+            \item 相似 URL 前缀相同（如 \texttt{ustc.edu.cn/...}），导致 Region Server 热点问题，无法利用集群并行能力。
+        \end{itemize}
+    \end{alertblock}
+    
+    \begin{exampleblock}{Our Solution: Hash + Timestamp}
+        \texttt{RowKey = MD5(URL)[0:8] + "\_" + Timestamp}
+        \begin{itemize}
+            \item \textbf{MD5前缀}：确保数据随机分布到不同 Region，实现负载均衡。
+            \item \textbf{Timestamp}：支持同一 URL 的多版本存储（历史快照）。
+        \end{itemize}
+    \end{exampleblock}
+\end{frame}
+
+\begin{frame}[fragile]{3.3 HBase 表结构定义}
+    我们设计了单表多列族的结构：\texttt{ustc\_documents}
+    
+    \begin{table}
+        \centering
+        \begin{tabular}{l|l|l}
+            \toprule
+            \textbf{Row Key} & \textbf{Column Family: info} & \textbf{Column Family: content} \\
+            \midrule
+            \texttt{a1b2c3d4\_167...} & \texttt{info:url} = https://... & \texttt{content:html} = <html>... \\
+             & \texttt{info:title} = 教务通知 & \texttt{content:text} = 清洗后文本... \\
+             & \texttt{info:date} = 2024-01-15 & \\
+            \bottomrule
+        \end{tabular}
+    \end{table}
+    
+    \begin{itemize}
+        \item \textbf{info}: 存储元数据，常驻内存，访问频率高。
+        \item \textbf{content}: 存储大文本，按需读取，节省 I/O。
+    \end{itemize}
+\end{frame}
+
+% -----------------------------------------------------------------------------
+% 4. 推荐与搜索算法详解
+% -----------------------------------------------------------------------------
+\section{核心算法三：搜索排序与相关度计算}
+
+\begin{frame}{4.1 倒排索引 (Inverted Index) 构建}
+    为了实现 $O(1)$ 时间复杂度的查询，我们构建了倒排索引：
+    
+    \vspace{0.3cm}
+    \textbf{Term Dictionary (词典)} $\rightarrow$ \textbf{Posting List (倒排表)}
+    
+    \begin{itemize}
+        \item \textbf{Key}: \texttt{计算机} (分词后的 Token)
+        \item \textbf{Value}: \texttt{[DocID\_1, DocID\_5, DocID\_9, ...]}
+    \end{itemize}
+    
+    \vspace{0.3cm}
+    \textbf{流程}：
+    \begin{enumerate}
+        \item \textbf{分词}：使用 Jieba 引擎 + 自定义词典（``中科大''，``少年班''）。
+        \item \textbf{停用词过滤}：去除 ``的''、``了''、``是'' 等无意义高频词。
+        \item \textbf{索引合并}：将所有文档的 Token 映射关系持久化到 HBase 的 \texttt{index} 表中。
+    \end{enumerate}
+\end{frame}
+
+\begin{frame}{4.2 排序算法演进：从 TF-IDF 到 BM25}
+    \begin{columns}
+        \column{0.45\textwidth}
+        \textbf{TF-IDF 的局限}
+        \begin{itemize}
+            \item 词频线性增长，未考虑饱和度。
+            \item 长文档天然容易包含更多关键词，导致分数偏高（长文档偏差）。
+        \end{itemize}
+        
+        \column{0.55\textwidth}
+        \textbf{BM25 的改进 (Best Matching)}
+        \begin{itemize}
+            \item \textbf{词频饱和} ($k_1$)：当词频达到一定程度，分数增长变缓。
+            \item \textbf{长度归一化} ($b$)：惩罚过长的文档。
+        \end{itemize}
+    \end{columns}
+    
+    \vspace{0.5cm}
+    \begin{equation*}
+        Score(D, Q) = \sum_{i=1}^{n} IDF(q_i) \cdot \frac{f(q_i, D) \cdot (k_1 + 1)}{f(q_i, D) + k_1 \cdot (1 - b + b \cdot \frac{|D|}{avgdl})}
+    \end{equation*}
+    \centering \tiny{本项目参数配置：$k_1=1.5, b=0.75$}
+\end{frame}
+
+\begin{frame}[fragile]{4.3 最终 Ranking 策略：多因子融合}
+    单一的 BM25 往往不够，我们引入了 \textbf{标题加权 (Title Boosting)} 策略：
+    
+    \begin{block}{评分公式}
+        $$ FinalScore = BM25(Content) \times TitleWeight $$
+    \end{block}
+    
+    \textbf{代码实现逻辑}：
+    \begin{lstlisting}
+# 1. 计算内容匹配度
+score = ranker.calculate_bm25(doc_tokens, query_tokens)
+
+# 2. 计算标题匹配度
+title_tokens = tokenize(doc.title)
+match_ratio = len(set(query) & set(title)) / len(query)
+
+# 3. 动态加权
+if match_ratio > 0.8:
+    score *= 2.0  # 强匹配，权重翻倍
+elif match_ratio > 0.5:
+    score *= 1.5  # 弱匹配，适度提升
+    \end{lstlisting}
+\end{frame}
+
+% -----------------------------------------------------------------------------
+% 5. 总结
+% -----------------------------------------------------------------------------
+\section{总结与展望}
+
+\begin{frame}{5.1 实验成果总结}
+    \begin{itemize}
+        \item \textbf{工程能力}：完整实现了从数据采集、清洗、存储到检索的全链路大数据系统。
+        \item \textbf{算法深度}：没有依赖现成的 ES，手写实现了工业级搜索算法 BM25，深入理解了相关性计算原理。
+        \item \textbf{系统架构}：通过 HBase 解决了海量非结构化数据的存储难题。
+    \end{itemize}
+\end{frame}
+
+\begin{frame}{5.2 待改进方向}
+    \begin{enumerate}
+        \item \textbf{分布式扩展}：目前的爬虫和 Web 服务仍是单节点，可利用 ZooKeeper 进行分布式协调。
+        \item \textbf{语义搜索}：引入 Word2Vec 或 BERT 向量模型，解决关键词不匹配但语义相关的问题（如搜 ``计算机'' 也能出 ``CS''）。
+        \item \textbf{实时索引}：目前索引构建是离线的，可引入 Kafka 实现数据写入即搜索（NRT）。
+    \end{enumerate}
+\end{frame}
+
+\begin{frame}
+    \centering
+    \Huge
+    \textbf{感谢聆听！}
+    
+    \vspace{1cm}
+    \Large
+    请老师批评指正
+\end{frame}
+
+\end{document}
+
