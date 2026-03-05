@@ -1,0 +1,219 @@
+\section{Task 2: Multi-Label Classification}
+This task formulates glass-surface inspection as a \emph{multi-label} classification problem with four labels (no defect, chipped edge, scratch, stain). We train a convolutional neural network (ResNet backbone) with a sigmoid multi-label head and evaluate it using the \textbf{Micro F1-score} on the provided test set. With our current retraining run (2 epochs), the checkpoint achieves \textbf{Micro F1 = 0.8439} on the test set at a decision threshold of 0.50.
+
+\subsection{Problem Formulation}
+We define a label vector $\mathbf{y}\in\{0,1\}^4$ for each image with the following ordered labels:
+\[
+\mathbf{y} = [y_{\text{no\_defect}},\; y_{\text{chipped\_edge}},\; y_{\text{scratch}},\; y_{\text{stain}}].
+\]
+
+\subsubsection{Multi-label vs. multi-class}
+This task is \emph{multi-label} (not multi-class): an image may contain multiple defect types simultaneously. Therefore, we model each label as an independent Bernoulli variable and use a sigmoid output for each label instead of a softmax over classes.
+
+\subsubsection{Label Construction from Annotation Files}
+Each image may have a corresponding \texttt{.txt} file that lists defect instances. We assign labels by the rules required in the task description:
+\begin{itemize}
+  \item If the image has \textbf{no defects}, then $y_{\text{no\_defect}}=1$ and the other three labels are 0.
+  \item If the image has defects, then for each defect type present in the \texttt{.txt} file, we set the corresponding label to 1.
+\end{itemize}
+
+In our implementation, the dataset parser treats a missing \texttt{.txt} as a clean image (no defect). For images with an existing \texttt{.txt}, we mark each defect label as present if \emph{at least one} instance of that defect class appears in the file.
+
+The annotation files use defect class IDs $\{0,1,2\}$, which we map to \texttt{chipped\_edge}, \texttt{scratch}, and \texttt{stain}, respectively. The \texttt{no\_defect} label is derived: it is set to 1 only when no defect ID appears (including the case of an empty file).
+
+\subsubsection{Implementation (label parsing)}
+The image-level label is computed by scanning the annotation file and marking whether each defect ID appears at least once. This is implemented in \texttt{Task2/dataset.py} (function \texttt{\_load\_label}). In words:
+\begin{itemize}
+  \item If the \texttt{.txt} file is missing, set \texttt{no\_defect=1}.
+  \item Otherwise, set \texttt{chipped\_edge/scratch/stain} to 1 if the corresponding defect ID appears in any line.
+  \item If no defect IDs appear (empty file), set \texttt{no\_defect=1}.
+\end{itemize}
+
+\subsection{Dataset and Preprocessing}
+The dataset is organized as:\; \texttt{data/train/img}, \texttt{data/train/txt}, \texttt{data/test/img}, \texttt{data/test/txt}.
+
+\subsubsection{What the \texttt{.txt} file means}
+Each \texttt{.txt} file contains 0 or more lines of the form
+\[\texttt{class\_id \; x\_center \; y\_center \; width \; height}\]
+(the geometry fields are not needed for Task~2). We treat the image as having a defect label if \emph{any} line has a given defect class ID. This converts an instance-level annotation into an image-level multi-label target.
+
+\subsubsection{Image Transformations}
+Training uses standard resizing to $320\times 320$ and light augmentation (color jitter, flips, small rotations), followed by normalization. Validation/test use resizing and normalization only.
+
+\subsubsection{Class Imbalance Handling}
+Multi-label datasets are often highly imbalanced (e.g., far more \texttt{no\_defect} than rare defects). We address this using \texttt{BCEWithLogitsLoss} with a \texttt{pos\_weight} computed by scanning training labels, increasing the loss contribution of rare positives.
+
+Concretely, for each label $k$, we compute
+\[
+\texttt{pos\_weight}_k = \frac{N_{\text{neg},k}}{N_{\text{pos},k}},
+\]
+where $N_{\text{pos},k}$ and $N_{\text{neg},k}$ are counted from training annotations. This encourages the optimizer not to ignore rare defect labels.
+
+Figure~\ref{fig:prevalence} visualizes this imbalance: \texttt{no\_defect} is very frequent, while the defect labels are comparatively rare. This imbalance is the main reason that Micro F1 can appear high even when rare-label precision is limited.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figures/label_prevalence.png}
+  \caption{Label prevalence (positive rate) computed from annotation files.}
+  \label{fig:prevalence}
+\end{figure}
+
+\subsection{Model}
+We use a ResNet backbone and replace the final classification layer with a 4-unit linear head for multi-label prediction. The network outputs logits $\mathbf{z}\in\mathbb{R}^4$, converted to probabilities via a sigmoid:
+\[
+\hat{\mathbf{p}} = \sigma(\mathbf{z}).
+\]
+A label is predicted positive when $\hat{p}_k \ge t$ for threshold $t$.
+
+\subsubsection{How the forward pass maps to labels}
+Given an image $x$, the model predicts four independent probabilities
+$\hat{p}_{\text{no\_defect}}, \hat{p}_{\text{chipped\_edge}}, \hat{p}_{\text{scratch}}, \hat{p}_{\text{stain}}$.
+We use a sigmoid (not softmax) because multiple defect labels can be simultaneously true.
+
+\subsubsection{Implementation (model)}
+The model is implemented in \texttt{Task2/model.py} as \texttt{MultiLabelResNet}. We take a ResNet-34 backbone, remove its original classification layer, and add a small head that outputs 4 logits. During evaluation, we apply $\sigma(\cdot)$ and threshold the probabilities to obtain a 0/1 vector.
+
+\subsubsection{Training Setup (Best Checkpoint)}
+The checkpoint metadata indicates the following configuration:
+\begin{itemize}
+  \item Backbone: ResNet-34 with ImageNet initialization (pretrained)
+  \item Image size: $320\times 320$
+  \item Optimizer: AdamW, learning rate $3\times 10^{-4}$, weight decay $10^{-4}$
+  \item Epochs: 2 (current run), cosine annealing learning-rate schedule
+  \item Mixed precision (AMP): enabled (if CUDA available)
+  \item Validation split: 10\% of training data
+\end{itemize}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figures/training_curves.png}
+  \caption{Training curves recorded during training (epoch-level train/val loss, validation Micro F1, and learning rate).}
+  \label{fig:training-curves}
+\end{figure}
+
+\subsubsection{Training log (per epoch)}
+We record epoch-level metrics to \texttt{Task2/report/train\_log.json} and \texttt{Task2/report/train\_log.csv}. Table~\ref{tab:task2-trainlog} summarizes the current run.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{rrrrr}
+\toprule
+Epoch & Train loss & Val loss & Val Micro F1 & Best $t$ (val)\\
+\midrule
+1 & 0.6368 & 0.6095 & 0.8242 & 0.70\\
+2 & 0.4875 & 0.4822 & 0.8554 & 0.50\\
+\bottomrule
+\end{tabular}
+\caption{Epoch-level training/validation metrics for the current run.}
+\label{tab:task2-trainlog}
+\end{table}
+
+\subsubsection{What is optimized (loss function)}
+We optimize a weighted binary cross-entropy over four labels. Using logits $z_k$ and targets $y_k\in\{0,1\}$, the per-label term is
+\[
+\ell_k = -\,w_k\,y_k\log\sigma(z_k)\; -\;(1-y_k)\log(1-\sigma(z_k)),
+\]
+where $w_k$ is the \texttt{pos\_weight} for label $k$. The final loss is the mean over labels and batch.
+
+\subsubsection{Implementation (training loop and metric computation)}
+Training is implemented in \texttt{Task2/train.py}. Each epoch performs:
+\begin{itemize}
+  \item One training pass that minimizes weighted BCE with logits.
+  \item A validation pass that computes \textbf{Micro F1} using \texttt{Task2/utils.py} (function \texttt{evaluate}).
+  \item A threshold search on the validation set via \texttt{threshold\_search} (tries candidate thresholds and selects the one with the best Micro F1).
+\end{itemize}
+
+To make the experiment reportable, \texttt{Task2/train.py} records epoch-level metrics to \texttt{train\_log.json/csv} and updates \texttt{training\_curves.png} after every epoch.
+
+\subsection{Threshold Selection}
+Since sigmoid outputs are continuous, we must choose a decision threshold $t$. We select $t$ by searching over candidate values on the validation split (0.20 to 0.80 with step 0.05) and storing the threshold that maximizes Micro F1.
+
+In the current run, the best validation threshold changes across epochs (Table~\ref{tab:task2-trainlog}), illustrating that thresholding is part of model selection in multi-label settings.
+
+In addition, we also plot Micro F1 as a function of threshold on the \emph{test set} to visualize sensitivity to $t$ (this is diagnostic only; the reported test score still uses the stored threshold from validation).
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{figures/threshold_scan_test.png}
+  \caption{Micro F1 vs threshold on the test set (diagnostic).}
+  \label{fig:threshold-scan-test}
+\end{figure}
+
+\subsection{Evaluation Metric: Micro F1}
+We report \textbf{Micro F1-score} on the test set, as required. For multi-label classification, Micro F1 aggregates true positives, false positives, and false negatives over \emph{all} labels before computing F1, emphasizing overall instance-level correctness.
+
+For completeness, we also report the macro F1 (unweighted mean over labels) to highlight performance on rare defect labels. Macro F1 is typically lower under heavy imbalance.
+
+\subsection{Results on the Test Set}
+Using the saved checkpoint and the stored threshold $t=0.50$, we obtain:
+\[
+\text{Micro F1 (test)} = 0.8439.
+\]
+
+We also compute the test-set weighted BCE loss (for reference):
+\[
+\text{BCE loss (test)} = 0.2423.
+\]
+
+\input{table/metrics_table.tex}
+
+\paragraph{Key observations from Table~\ref{tab:task2-metrics}.}
+\begin{itemize}
+  \item \textbf{Imbalance dominates Micro F1.} The \texttt{no\_defect} label has very large support (9501 positives), so its performance strongly influences Micro F1.
+  \item \textbf{The model prioritizes recall on rare defects.} For \texttt{chipped\_edge}, \texttt{scratch}, and \texttt{stain}, recall is high, but precision is much lower. This indicates many false positives for rare labels.
+  \item \textbf{Macro F1 is much lower than Micro F1.} This is expected under heavy imbalance: macro F1 weights rare labels equally and therefore highlights their difficulty.
+\end{itemize}
+
+\paragraph{Why precision is low for rare labels.} There are two main factors. (1) Positive samples for rare defects are scarce compared with clean images, so the classifier may over-trigger defect labels. (2) Defect appearances can be subtle and share texture statistics with normal glass patterns, increasing confusion. Using \texttt{pos\_weight} improves recall but can also increase false positives; threshold tuning is therefore important.
+
+\paragraph{Average Precision (AP) interpretation.} Figure~\ref{fig:pr-curves} shows Precision--Recall curves, which summarize performance across all thresholds. The AP values (area under the PR curve) further highlight the difficulty of rare labels: \texttt{no\_defect} is near-perfect, while \texttt{chipped\_edge} is substantially harder, suggesting that the raw probability ranking for this class is not very separable.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.85\linewidth]{figures/per_label_f1.png}
+  \caption{Per-label F1-score on the test set at threshold $t=0.50$.}
+  \label{fig:per-label-f1}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.90\linewidth]{figures/pr_curves_test.png}
+  \caption{Precision--Recall curves on the test set (includes micro-average).}
+  \label{fig:pr-curves}
+\end{figure}
+
+\subsection{Discussion}
+\paragraph{Strengths.} The model achieves strong Micro F1, driven largely by high performance on \texttt{no\_defect} and competitive recall on rarer defect classes. Threshold tuning provides a principled way to trade precision and recall.
+
+\paragraph{Weaknesses.} Per-label precision for rare classes can be lower due to class imbalance and overlapping visual patterns. In multi-label settings, false positives on rare labels can meaningfully impact downstream inspection workflows.
+
+In this experiment, the gap between Micro F1 and Macro F1 is consistent with an imbalanced dataset: the model is reliable on the dominant clean class, while defect classes (especially visually subtle ones) show a precision--recall trade-off.
+
+\paragraph{Effect of training length.} This report reflects a short retraining run (2 epochs). Longer training typically improves the representation and calibration of rare labels, which can increase both Macro F1 and Micro F1. Therefore, the defect-label precision/recall trade-off observed here should be interpreted as an early-stage model rather than a fully converged one.
+
+\paragraph{Potential Improvements.}
+\begin{itemize}
+  \item Use per-class thresholds (rather than a single global $t$) to better calibrate rare classes.
+  \item Add stronger augmentations (e.g., RandAugment) and/or class-aware sampling.
+  \item Use focal loss or asymmetric loss tailored for multi-label imbalance.
+  \item Add probability calibration (temperature scaling) to improve decision reliability.
+\end{itemize}
+
+\subsection{Reproducibility}
+To reproduce the reported Micro F1 on the test set:
+\begin{itemize}
+  \item Run evaluation: \texttt{python3 Task2/eval.py --data\_path data --checkpoint Task2/best\_task2\_retrain.pth --img\_size 320}
+  \item Regenerate report assets (table/plots): \texttt{python3 Task2/report/compute\_task2\_metrics.py --data\_path data --checkpoint Task2/best\_task2\_retrain.pth --img\_size 320}
+  \item Re-train and record curves: \texttt{python3 Task2/train.py --data\_path data --img\_size 320 --batch\_size 32 --epochs 2 --lr 0.0003 --weight\_decay 0.0001 --backbone resnet34 --pretrained --val\_split 0.1 --num\_workers 4 --seed 42 --amp --log\_interval 20 --plot\_curves --log\_dir Task2/report --save\_path Task2/best\_task2\_retrain.pth}
+\end{itemize}
+
+\subsubsection{Where it is implemented in code}
+The pipeline is implemented as follows:
+\begin{itemize}
+  \item Dataset + label parsing: \texttt{Task2/dataset.py} (function \texttt{\_load\_label})
+  \item Model definition: \texttt{Task2/model.py} (class \texttt{MultiLabelResNet})
+  \item Training loop + threshold search: \texttt{Task2/train.py} (uses \texttt{threshold\_search} and \texttt{save\_checkpoint})
+  \item Metric computation (Micro F1): \texttt{Task2/utils.py} (function \texttt{evaluate})
+  \item Test evaluation entry point: \texttt{Task2/eval.py}
+\end{itemize}

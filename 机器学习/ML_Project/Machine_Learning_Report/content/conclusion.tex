@@ -1,0 +1,9 @@
+\section{Conclusion}
+
+In this project, we successfully developed and deployed deep learning solutions for glass surface defect inspection, tackling both the fundamental implementation challenges and the practical complexities of multi-label classification.
+
+\textbf{Task 1} demonstrated the feasibility of training deep residual networks without automatic differentiation engines. By deriving and implementing vectorized backpropagation for Convolution and Batch Normalization, we achieved a validation F1-score of 0.6796 with a manual ResNet-18. Our analysis highlighted that while simpler architectures (SimpleCNN) can achieve competitive metrics via aggressive loss weighting, the residual connections and normalization layers in ResNet provide superior gradient stability and convergence robustness.
+
+\textbf{Task 2} extended the scope to multi-label classification, identifying specific defect types (chipped edge, scratch, stain) under severe class imbalance. Utilizing a ResNet-34 backbone with weighted BCE loss and threshold tuning, we attained a Micro F1-score of 0.8439 on the test set. The results emphasize that for industrial inspection tasks, treating thresholding as a hyperparameter and employing label-specific weighting are as critical as the choice of model architecture.
+
+Overall, our work bridges the gap between theoretical gradient derivations and practical model deployment, providing a reliable framework for automated defect detection.

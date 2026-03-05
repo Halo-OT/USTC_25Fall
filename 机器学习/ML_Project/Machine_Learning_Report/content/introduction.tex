@@ -1,0 +1,19 @@
+\section{Introduction}
+
+\subsection{Background and Motivation}
+In modern industrial manufacturing, quality control is a critical component ensuring product reliability and customer satisfaction. Glass manufacturing, in particular, requires rigorous inspection to identify surface defects such as scratches, bubbles, and cracks. Traditional manual inspection is labor-intensive, error-prone due to fatigue, and often too slow for high-speed production lines. Consequently, automated optical inspection (AOI) systems based on computer vision have become the standard solution. With the advent of deep learning, Convolutional Neural Networks (CNNs) have demonstrated superior performance in feature extraction and pattern recognition, making them ideal candidates for robust defect detection systems.
+
+\subsection{Problem Statement}
+The objective of this project (Task 1) is to develop a binary classification system capable of distinguishing between defective and non-defective glass images. The dataset consists of high-resolution images provided in the WhiteList and a training set containing both defective and defect-free samples. A significant challenge in this task is the potential class imbalance and the need for a model that generalizes well to unseen defects. Furthermore, the core technical requirement of this project is to implement the deep learning pipeline \textit{from scratch}, without relying on automatic differentiation frameworks (like PyTorch's \texttt{autograd}), to demonstrate a fundamental understanding of neural network mechanics.
+
+\subsection{Project Scope and Contributions}
+In this work, we design and implement a complete deep learning framework for glass defect detection. Our contributions are summarized as follows:
+
+\begin{itemize}
+    \item \textbf{Manual Implementation of Backpropagation:} We implement the forward and backward passes for all core neural network layers, including Convolution (Conv2d), Batch Normalization (BatchNorm2d), Rectified Linear Unit (ReLU), Max Pooling, and Global Average Pooling (GAP). Special attention is paid to the derivation of gradients for vector-Jacobian products.
+    \item \textbf{High-Performance Optimization:} To ensure training efficiency on GPUs (e.g., NVIDIA V100/RTX 3090), we implement vectorized gradient calculations, particularly for convolutional layers, avoiding slow nested loops. We also perform manual memory management to handle large batch sizes.
+    \item \textbf{Advanced Architectures and Loss Functions:} We explore two architectures: a standard VGG-style \texttt{SimpleCNN} and a deeper \texttt{ResNet} with skip connections to mitigate gradient vanishing issues in manual implementation. To address class imbalance, we implement and compare Weighted Cross Entropy Loss and Focal Loss.
+    \item \textbf{Custom Optimizers:} We provide manual implementations of Stochastic Gradient Descent (SGD) and Adam optimizers, including features like momentum, weight decay, and bias correction.
+\end{itemize}
+
+The remainder of this report for Task 1 details the mathematical derivation of the manual backpropagation, the architectural design, experimental setup, and a comprehensive analysis of the results.
